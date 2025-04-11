@@ -90,6 +90,12 @@ begin
   end
 end
 
+include("template/networkx.jl")
+using .NetworkX
+
+nx_graph = NetworkX.edges_to_networkx(edges, centroids)
+mcb = NetworkX.mcb(nx_graph)
+
 # Get the minimal cycle basis (vertex sequences).
 mcb = FastMCB.fast_mcb(k, edges, centroids)
 

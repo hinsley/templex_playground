@@ -288,4 +288,38 @@ function joining_locus(edges::Vector{Tuple{Int, Int}}, faces::Vector{Vector{Int}
   return result_edges
 end
 
+"""
+  mcb(edges, k)
+
+Constructs a minimal cycle basis for a graph represented by edges.
+
+Args:
+- edges: A vector of 2-tuples representing directed edges.
+The function treats these as undirected for cycle basis calculation.
+- k: The number of vertices in the graph.
+
+Returns:
+- A vector of vectors, where each inner vector represents a cycle as a sequence 
+  of vertices.
+"""
+function mcb(edges, k)
+  # Create an undirected graph with k vertices.
+  # SimpleGraph should be available via `using Graphs`.
+  g = SimpleGraph(k)
+
+  # Add edges one by one to the undirected graph.
+  # add_edge! should be available via `using Graphs`.
+  for edge in edges
+    u, v = edge
+    add_edge!(g, u, v) # Graphs.jl handles potential duplicate edges automatically.
+  end
+
+  # Compute the cycle basis of the undirected graph.
+  # cycle_basis should be available via `using Graphs`.
+  basis = cycle_basis(g)
+
+  # Return the basis.
+  return basis
+end
+
 end # module

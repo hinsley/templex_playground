@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(".")
 Pkg.instantiate()
 
-using GLMakie, OrdinaryDiffEq, Statistics, DataStructures
+using GLMakie, OrdinaryDiffEq, Statistics, Clustering, DataStructures
 using LinearAlgebra, KernelDensity, NearestNeighbors, GeometryBasics
 
 include("template/template.jl")
