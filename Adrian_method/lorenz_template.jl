@@ -195,7 +195,7 @@ begin
               push!(triangles, GLTriangleFace(p1_idx, i, i + 1))
           end
           # Plot the mesh and store the plot object
-          p = mesh!(ax, points, triangles, color = (:gray, 0.3)) # Light gray, semi-transparent
+          p = mesh!(ax, points, triangles, color = (:cyan, 0.6)) # Changed color to cyan
           push!(face_plots, p)
       end
   end
