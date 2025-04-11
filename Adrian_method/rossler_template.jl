@@ -11,31 +11,34 @@ using .Template
 include("fast_mcb.jl")
 using .FastMCB
 
-# Define the Lorenz system.
-function lorenz!(du, u, p, t)
-  σ, ρ, β = p
-  x, y, z = u
-  
-  du[1] = σ * (y - x)
-  du[2] = x * (ρ - z) - y
-  du[3] = x * y - β * z
+# Define the Rössler system
+function rossler!(du, u, p, t)
+    a, b, c = p
+    x, y, z = u
+    
+    du[1] = -y - z
+    du[2] = x + a * y
+    du[3] = b + z * (x - c)
 end
 
-# Parameters for the Lorenz system.
-p = (10.0, 28.0, 8/3)
-u0 = [1.0, 0.0, 0.0]
-tspan = (0.0, 1e3)
+# Parameters for the Rössler system (chaotic)
+a = 0.2
+b = 0.2
+c = 5.7
+p = (a, b, c)
+u0 = [0.0, 1.0, 0.0] # Typical initial condition
+tspan = (0.0, 1e5) # Longer time span might be needed for good attractor coverage
 
-# Calculate the trajectory of the Lorenz system.
-prob = ODEProblem(lorenz!, u0, tspan, p)
-trajectory = solve(prob, Tsit5(), saveat=0.01)
+# Calculate the trajectory of the Rössler system
+prob = ODEProblem(rossler!, u0, tspan, p)
+trajectory = solve(prob, Tsit5(), saveat=0.03, abstol=1e-8, reltol=1e-8) # Use a slightly larger saveat and tolerance
 
-# Extract points from the trajectory.
+# Extract points from the trajectory
 all_points = hcat(trajectory.u...)'
 total_points = size(all_points, 1)
 
-# Skip initial transient (first 10% of trajectory).
-transient_skip = Int(ceil(0.1 * total_points))
+# Skip initial transient (adjust percentage if needed, e.g., 20%)
+transient_skip = Int(ceil(0.2 * total_points))
 points = all_points[(transient_skip+1):end, :]
 num_points = size(points, 1)
 
@@ -44,19 +47,19 @@ println("Skipping initial transient: $transient_skip points")
 println("Using $num_points points for analysis")
 
 # Perform clustering using the template module.
-k = 48  # Number of clusters.
-clusters, assignments = Template.cluster(points, k)
+k = 64  # Number of clusters (may need adjustment for Rössler)
+@time clusters, assignments = Template.cluster(points, k)
 
 # Extract centroids from clustering results.
-centroids = [c[1] for c in clusters] # This is now Vector{Vector{Float64}} of 3D points
+centroids = [c[1] for c in clusters] # This is now a Vector{Vector{Float64}} of 3D points.
 cluster_indices = [c[2] for c in clusters]
 
 # Get the connectivity matrix.
 connectivity_matrix = Template.cluster_connectivity(assignments, k)
-undirected_connectivity_matrix = (connectivity_matrix + connectivity_matrix')
+undirected_connectivity_matrix = (connectivity_matrix + connectivity_matrix') # Note: This is unused later
 
 # Set threshold for connectivity between clusters & get edges.
-connectivity_threshold = 30
+connectivity_threshold = 50 # May need adjustment for Rössler
 edges = Template.edges(connectivity_matrix, connectivity_threshold)
 
 # For debugging. If you get bidirectional connections, increase the
@@ -66,20 +69,24 @@ begin
   bidirectional_connections = []
   for i in 1:size(connectivity_matrix, 1)
       for j in (i+1):size(connectivity_matrix, 2)
-          if connectivity_matrix[i,j] > connectivity_threshold && connectivity_matrix[j,i] > connectivity_threshold
-              push!(bidirectional_connections, (i,j))
+          # Check using the threshold defined for edges
+          if connectivity_matrix[i,j] >= connectivity_threshold && connectivity_matrix[j,i] >= connectivity_threshold
+              # Ensure the edge (i, j) or (j, i) was actually selected by Template.edges
+              # This check is complex as Template.edges favors one direction
+              # A simpler check: are both (i,j) and (j,i) above threshold?
+               push!(bidirectional_connections, (i,j))
           end
       end
   end
 
   # Print information about bidirectional connections.
   if !isempty(bidirectional_connections)
-      println("Found bidirectional connections between clusters:")
+      println("Found potential bidirectional connections (both directions >= threshold) between clusters:")
       for (i,j) in bidirectional_connections
-          println("  Cluster $i ↔ Cluster $j")
+          println("  Cluster $i ↔ Cluster $j (Check if both (i,j) and (j,i) are in 'edges')")
       end
   else
-      println("No bidirectional connections found between clusters.")
+      println("No potential bidirectional connections found between clusters.")
   end
 end
 
@@ -91,11 +98,11 @@ two_cells = Template.faces(mcb, edges)
 println("Found $(length(two_cells)) 2-cells (raw) out of $(length(mcb)) basis cycles.")
 
 # Get unique faces before counting for joining locus
-unique_faces = unique(two_cells) # Note: This only catches exact sequence duplicates
-println("Found $(length(unique_faces)) unique 2-cell sequences.")
+distinct_face_sequences = unique(two_cells) # Renamed variable
+println("Found $(length(distinct_face_sequences)) unique 2-cell sequences.") # Use new name
 
 # Calculate the joining locus using unique faces.
-joining_locus_edges = Template.joining_locus(edges, unique_faces) # Use unique_faces
+joining_locus_edges = Template.joining_locus(edges, distinct_face_sequences) # Pass renamed variable
 joining_locus_set = Set(joining_locus_edges)
 println("Found $(length(joining_locus_edges)) directed edges in the joining locus.")
 
@@ -108,7 +115,7 @@ begin
     xlabel = "x", 
     ylabel = "y", 
     zlabel = "z",
-    title = "Lorenz Template")
+    title = "Rössler Template") # Updated title
   
   controls_grid = GridLayout(fig[2, 1], tellwidth = false)
 
@@ -125,13 +132,12 @@ begin
   toggle_label = Label(controls_grid[2, 1], "Show 2-Cell Faces:")
   face_toggle = Toggle(controls_grid[2, 2], active = true, halign = :left) # Start visible, align left
   faces_visible = face_toggle.active
-  # Make toggle horizontally aligned to the left within its cell
-  # halign!(face_toggle, :left) # Removed this line
 
   # Adjust column widths: Labels auto-size, slider/toggle column expands
   colsize!(controls_grid, 1, Auto())
   colsize!(controls_grid, 2, Relative(0.5)) # Make the middle column expand
   colsize!(controls_grid, 3, Auto())
+
 
   # --- Plot static elements --- 
   scatter!(ax, [c[1] for c in centroids], [c[2] for c in centroids], [c[3] for c in centroids], 
@@ -185,17 +191,17 @@ begin
 
   # --- Plot all 2-cell faces (meshes) --- 
   face_plots = [] # Store mesh plot objects
-  for cycle_vertices in two_cells
+  for cycle_vertices in distinct_face_sequences # Use unique faces
       if length(cycle_vertices) >= 3
-          points = [Point3f(centroids[v]) for v in cycle_vertices]
-          num_pts = length(points)
-          triangles = GLTriangleFace[]
+          pts = [Point3f(centroids[v]) for v in cycle_vertices]
+          num_pts = length(pts) # Use local pts variable
+          triangles = TriangleFace{Int}[] # Use TriangleFace
           p1_idx = 1
           for i in 2:(num_pts - 1)
-              push!(triangles, GLTriangleFace(p1_idx, i, i + 1))
+              push!(triangles, TriangleFace(p1_idx, i, i + 1)) # Use TriangleFace
           end
           # Plot the mesh and store the plot object
-          p = mesh!(ax, points, triangles, color = (:cyan, 0.6)) # Changed color to cyan
+          p = mesh!(ax, pts, triangles, color = (:cyan, 0.6), label=nothing) # Add label=nothing
           push!(face_plots, p)
       end
   end
@@ -227,9 +233,9 @@ begin
       if idx >= 1 && idx <= length(mcb)
           cycle_vertices = mcb[idx]
           if length(cycle_vertices) >= 3
-              points = [Point3f(centroids[v]) for v in cycle_vertices]
-              push!(points, points[1]) # Close the loop for lines!
-              line_points = points
+              pts = [Point3f(centroids[v]) for v in cycle_vertices] # Calculate local pts
+              push!(pts, pts[1]) # Close the loop using local pts
+              line_points = pts    # Assign local pts to observable input
               is_valid = true
               # Check if it's NOT a 2-cell (using your original logic for cycle_is_2cell)
               is_2cell = Template.cycle_is_2cell(cycle_vertices, edges)
