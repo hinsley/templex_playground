@@ -30,7 +30,7 @@ tspan = (0.0, 1.5e4) # Longer time span might be needed for good attractor cover
 
 # Calculate the trajectory of the Rössler system
 prob = ODEProblem(rossler!, u0, tspan, p)
-trajectory = solve(prob, Tsit5(), saveat=0.03, abstol=1e-8, reltol=1e-8) # Use a slightly larger saveat and tolerance
+trajectory = solve(prob, Tsit5(), saveat=0.003, abstol=1e-8, reltol=1e-8) # Use a slightly larger saveat and tolerance
 
 # Extract points from the trajectory
 all_points = hcat(trajectory.u...)'
@@ -41,14 +41,21 @@ transient_skip = Int(ceil(0.2 * total_points))
 points = all_points[(transient_skip+1):end, :]
 num_points = size(points, 1)
 
-# --- Prepare subset for plotting last 10% of *original* trajectory --- 
-# Calculate number of points for the last 10% of the full trajectory
-num_plot_points = min(10000, total_points)
-# Calculate the starting index within the 'points' array (post-transient)
-# to show the equivalent duration at the end.
+# Sparsify the trajectory to reduce computation time.
+points = Template.sparsify(points, 2.0)
+num_points = size(points, 1)  # Update num_points after sparsification
+
+# Print the size of the sparsified trajectory as a percentage of the original (post-transient) trajectory.
+percent = 100 * num_points / (total_points - transient_skip)
+println("Sparsified trajectory has $num_points points (" * string(round(percent, digits=1)) * "% of post-transient points)")
+
+# --- Prepare subset for plotting last N points of the sparsified trajectory --- 
+# Calculate number of points for the last segment to plot
+num_plot_points = min(10000, num_points)
+# Calculate the starting index within the 'points' array (sparsified)
 plot_start_idx_in_points = max(1, num_points - num_plot_points + 1)
 
-# Create the subset of points and assignments to plot
+# Create the subset of points and assignments to plot (from sparsified trajectory)
 plot_points_subset = points[plot_start_idx_in_points:end, :]
 
 println("Total trajectory points: $total_points")
@@ -57,10 +64,10 @@ println("Using $num_points points for analysis")
 println("Plotting last segment equivalent to $num_plot_points points (from index $plot_start_idx_in_points in analysis points)")
 
 # Perform clustering using the template module.
-k = 80  # Number of clusters (may need adjustment for Rössler)
+k = 60  # Number of clusters (may need adjustment for Rössler)
 connectivity_threshold = 20 # May need adjustment for Rössler
 max_force_boundary = 4
-rounds = 10
+rounds = 5
 
 # Use best_complex to optimize the template construction.
 best = Template.best_complex(
@@ -169,7 +176,8 @@ begin
 
   # --- Plot static elements --- 
   # Plot Trajectory Points (last segment, controlled by toggle)
-  scatter!(ax, plot_points_subset[:, 1], plot_points_subset[:, 2], plot_points_subset[:, 3], 
+  scatter!(
+    ax, plot_points_subset[:, 1], plot_points_subset[:, 2], plot_points_subset[:, 3], 
       color = plot_assignments_subset, # Use subset assignments
       colormap = :turbo, 
       colorrange = (1, k), # Explicitly set the color range

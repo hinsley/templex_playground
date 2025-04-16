@@ -490,4 +490,75 @@ function mcb(edges, k)
   return basis
 end
 
+"""
+  sparsify(trajectory, len)
+
+Resample a trajectory so that each output point is approximately `len` away from
+the previous, using linear interpolation.
+
+Args:
+- trajectory: Matrix where rows are time points and columns are dimensions.
+- len: Desired spacing between consecutive output points (in Euclidean norm).
+
+Returns:
+- A matrix of resampled points, with the same number of columns as the input
+  trajectory.
+"""
+function sparsify(trajectory, len)
+  n, d = size(trajectory)
+  if n < 2
+    error("Trajectory must have at least two points.")
+  end
+  # Preallocate output with the first point.
+  result_points = [trajectory[1, :]']
+  last_pt = trajectory[1, :]
+  t = 1
+  while t < n
+    # Find the next point at least `len` away from last_pt.
+    dist = 0.0
+    while t < n && dist < len
+      t += 1
+      dist = norm(trajectory[t, :] .- last_pt)
+    end
+    if t > n
+      break
+    end
+    # Interpolate if needed to get exactly `len` away.
+    prev_pt = trajectory[t-1, :]
+    next_pt = trajectory[t, :]
+    seg_vec = next_pt - prev_pt
+    seg_len = norm(seg_vec)
+    if seg_len == 0.0
+      continue
+    end
+    # Find alpha so that:
+    # norm((1-alpha)*prev_pt + alpha*next_pt - last_pt) == len.
+    # Let x = prev_pt + alpha*(next_pt - prev_pt).
+    # norm(x - last_pt) = len.
+    # Solve for alpha in [0, 1].
+    # Use a simple 1D search (bisection).
+    function f(alpha)
+      pt = prev_pt + alpha * seg_vec
+      return norm(pt - last_pt) - len
+    end
+    # Bisection method.
+    alpha_low = 0.0
+    alpha_high = 1.0
+    for _ in 1:20
+      alpha_mid = (alpha_low + alpha_high) / 2
+      if f(alpha_mid) > 0
+        alpha_high = alpha_mid
+      else
+        alpha_low = alpha_mid
+      end
+    end
+    alpha = (alpha_low + alpha_high) / 2
+    new_pt = prev_pt + alpha * seg_vec
+    push!(result_points, new_pt')
+    last_pt = new_pt
+    # t remains at current value for next iteration.
+  end
+  return reduce(vcat, result_points)
+end
+
 end # module
