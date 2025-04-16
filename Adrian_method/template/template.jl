@@ -1,40 +1,190 @@
 module Template
 
-using Clustering
 using LinearAlgebra
 using Statistics
 using Graphs
+using ParallelKMeans
 using SparseArrays
+using StatsBase
+include("networkx.jl")
 
 """
-  cluster(trajectory, k)
+  best_complex(
+    trajectory,
+    k;
+    rounds=10,
+    maxiter=nothing,
+    connectivity_threshold=30,
+    max_force_boundary=0,
+    print_frequencies=false,
+    allow_empty_joining_locus=false
+  )
+
+Run multiple rounds of clustering and complex construction, returning the result
+with the smallest joining locus (i.e., the best fitness).
+
+Each round, the trajectory is clustered into `k` clusters using ParallelKMeans,
+and the resulting complex is evaluated by the length of its joining locus (edges
+shared by 3 or more faces). The fitness function is the negative of the joining
+locus length (so maximizing fitness minimizes the joining locus). The best
+result across all rounds is returned.
+
+Args:
+- trajectory: Matrix where rows are time points and columns are dimensions.
+- k: Number of clusters.
+
+Keyword args:
+- rounds::Int=10: Number of clustering rounds to try (each with a different
+  k-means initialization).
+- maxiter::Union{Int, Nothing}=nothing: Maximum iterations for k-means (passed
+  to ParallelKMeans).
+- connectivity_threshold::Int=30: Minimum number of transitions required for an
+  edge between clusters.
+- max_force_boundary::Int=0: Minimum cycle length to force as a 2-cell boundary
+  (passed to faces()).
+- print_frequencies::Bool=false: If true, print the frequencies of joining locus
+  lengths across rounds.
+- allow_empty_joining_locus::Bool=false: If false (default), results with joining locus length 0 are skipped and not considered as best. If true, such results are allowed.
+
+Returns:
+- A named tuple containing the best result, with fields:
+    - clusters: Vector of (centroid, point_idxs) tuples.
+    - assignments: Raw assignments vector from k-means.
+    - centroids: Vector of centroid coordinates.
+    - connectivity_matrix: Sparse matrix of cluster transitions.
+    - edges: Vector of directed edges.
+    - mcb: Minimal cycle basis (vector of cycles).
+    - faces: Vector of 2-cell faces (unique cycles).
+    - joining_locus: Vector of edges in the joining locus.
+    - joining_locus_length: Number of edges in the joining locus.
+    - round: The round in which the best result was found.
+"""
+function best_complex(
+  trajectory,
+  k;
+  rounds::Int=10,
+  maxiter::Union{Int, Nothing}=nothing,
+  connectivity_threshold::Int=30,
+  max_force_boundary::Int=0,
+  print_frequencies::Bool=false,
+  allow_empty_joining_locus::Bool=false
+)::NamedTuple
+  best_fitness = -Inf
+  best_result = nothing
+  joining_locus_lengths = Int[]
+  best_round = 0
+
+  for round in 1:rounds
+    println("[best_complex] Round $round of $rounds...")
+    # Cluster the trajectory.
+    clusters, assignments = cluster(trajectory, k; maxiter=maxiter)
+    centroids = [c[1] for c in clusters]
+
+    # Compute connectivity and edges.
+    connectivity_matrix = cluster_connectivity(assignments, k)
+    edges = Template.edges(connectivity_matrix, connectivity_threshold)
+
+    # Skip if not enough edges for a complex.
+    if length(edges) < k
+      push!(joining_locus_lengths, 0)
+      continue
+    end
+
+    # Build NetworkX graph and compute minimal cycle basis.
+    nx_graph = NetworkX.edges_to_networkx(edges, centroids)
+    mcb = NetworkX.mcb(nx_graph)
+
+    # Compute faces (2-cells).
+    two_cells = faces(mcb, edges; max_force_boundary=max_force_boundary)
+    # Get unique faces.
+    distinct_faces = unique(two_cells)
+    # Compute joining locus.
+    joining_locus_edges = joining_locus(edges, distinct_faces)
+    joining_locus_length = length(joining_locus_edges)
+    push!(joining_locus_lengths, joining_locus_length)
+
+    # Optionally skip empty joining locus results.
+    if !allow_empty_joining_locus && joining_locus_length == 0
+      println("[best_complex] WARNING: Joining locus is empty (bad templex) in round $round. Skipping.")
+      continue
+    end
+
+    # Fitness is negative joining locus length (maximize = minimize locus).
+    fitness = -joining_locus_length
+    if fitness > best_fitness
+      best_fitness = fitness
+      best_result = (
+        clusters=clusters,
+        assignments=assignments,
+        centroids=centroids,
+        connectivity_matrix=connectivity_matrix,
+        edges=edges,
+        mcb=mcb,
+        faces=distinct_faces,
+        joining_locus=joining_locus_edges,
+        joining_locus_length=joining_locus_length,
+        round=round
+      )
+      best_round = round
+    end
+  end
+
+  # Optionally print frequencies of joining locus lengths.
+  if print_frequencies
+    freq = StatsBase.countmap(joining_locus_lengths)
+    println("Joining locus length frequencies:")
+    for (len, count) in sort(collect(freq), by=x->x[1])
+      println("  $len: $count")
+    end
+  end
+
+  return best_result
+end
+
+"""
+  cluster(trajectory, k; [maxiter])
 
 Cluster the trajectory (except for the first and last point) into k clusters in
-1-jet space.
+1-jet space using the ParallelKMeans algorithm.
+
+Args:
+- trajectory: Matrix where rows are time points and columns are dimensions.
+- k: Number of clusters.
+- maxiter::Union{Int, Nothing} (keyword, default nothing): Maximum iterations for k-means.
 
 Returns a tuple:
-- A vector of tuples (centroid, point_idxs).
+- A vector of tuples (centroid, point_idxs). Centroids are 3D spatial coordinates.
 - The raw assignments vector from k-means.
 """
-function cluster(trajectory, k)
+function cluster(trajectory, k; maxiter::Union{Int, Nothing}=nothing)
   dim = size(trajectory, 2)
+  if dim < 3
+      error("Trajectory must have at least 3 spatial dimensions.")
+  end
   points = trajectory[2:end-1, :]
   # Use next - prev for velocity.
   velocities = trajectory[3:end, :] - trajectory[1:end-2, :]
   # Create jets by concatenating points and velocities.
-  jets = hcat(points, velocities)'
+  # Data format for kmeans/fastkmeans/ParallelKMeans: features (dims) as rows, observations as columns
+  jets = hcat(points, velocities)' # jets is (2*dim) x num_points
 
-  # Cluster the jets.
-  result = kmeans(jets, k)
-  
-  # Extract centroids and assignments.
-  centroids = result.centers
+  # Cluster the jets using ParallelKMeans.
+  local result # Ensure scope
+  if maxiter === nothing
+    result = ParallelKMeans.kmeans(jets, k) # Use default max_iters
+  else
+    result = ParallelKMeans.kmeans(jets, k, max_iters=maxiter) # Pass maxiter as max_iters
+  end
+
+  # Extract assignments and centroids from the result struct
   assignments = result.assignments
-  
-  # Group point indices by cluster. Indices are relative to the 'points' array.
+  centroids = result.centers # centroids is (2*dim) x k
+
+  # Group point indices by cluster. Indices are relative to the 'points' array (1 to num_points-2).
   point_idxs = [findall(==(i), assignments) for i in 1:k]
-  
-  # Format cluster info.
+
+  # Format cluster info, extracting only the spatial dimensions (first `dim`) for the centroid.
+  # Ensure centroids is accessed correctly (it's (2*dim) x k)
   cluster_info = [(centroids[1:dim, i], point_idxs[i]) for i in 1:k]
 
   # Return cluster info and raw assignments.
@@ -105,6 +255,9 @@ Args:
   `FastMCB`).
 - edges: A vector of tuples `(u, v)` representing the directed edges in the
   graph.
+- max_force_boundary::Int (keyword, default 0): If the number of vertices `n`
+  in `cycle_vertices` is less than this value, the function will
+  immediately return `true` (treating it as not consistently orientable/not a 2-cell).
 
 Returns:
 - A boolean indicating whether the cycle vertices fail to form a consistently
@@ -112,14 +265,19 @@ Returns:
 """
 function cycle_is_2cell(
   cycle_vertices::Vector{Int},
-  edges::Vector{Tuple{Int, Int}}
+  edges::Vector{Tuple{Int, Int}};
+  max_force_boundary::Int=0
 )
   n = length(cycle_vertices)
-  # A cycle needs at least 3 vertices.
+
+  # Force small cycles to be boundaries of 2-cells.
+  if n <= max_force_boundary
+    return true
+  end
+
+  # A cycle needs at least 3 vertices for orientation checks.
   if n < 3
-    # Should this be true or false? If it cannot be a 2-cell, maybe true?
-    # Let's assume for now it's not considered a failure in the same way, return false.
-    return false 
+    return false # Treat triangles and smaller as potentially orientable by default
   end
 
   # Create a set for efficient edge lookup.
@@ -219,14 +377,24 @@ Args:
 - cycle_basis: A vector of vectors, where each inner vector represents a cycle
   as a sequence of vertices.
 - edges: A vector of 2-tuples representing directed edges.
+- max_force_boundary::Int (keyword, default 0): If the number of vertices `n`
+  in `cycle_basis` is less than this value, the function will immediately return
+  the cycle (treating it as not consistently orientable, i.e., a boundary of a
+  2-cell).
 
 Returns:
 - A vector of vectors, where each inner vector represents a 2-cell boundary as a
   sequence of vertices.
 """
-function faces(cycle_basis, edges)
+function faces(cycle_basis, edges; max_force_boundary::Int=0)
   # Filter the cycle basis, keeping only the cycles that are 2-cells.
-  two_cells = [cycle for cycle in cycle_basis if cycle_is_2cell(cycle, edges)]
+  two_cells = [
+    cycle for cycle in cycle_basis if cycle_is_2cell(
+      cycle,
+      edges;
+      max_force_boundary=max_force_boundary
+    )
+  ]
   return two_cells
 end
 

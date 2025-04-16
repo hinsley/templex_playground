@@ -6,10 +6,9 @@ using GLMakie, OrdinaryDiffEq, Statistics, DataStructures
 using LinearAlgebra, KernelDensity, NearestNeighbors, GeometryBasics
 
 include("template/template.jl")
+include("template/networkx.jl")
 using .Template
-
-include("fast_mcb.jl")
-using .FastMCB
+using .NetworkX
 
 # Define the Rössler system
 function rossler!(du, u, p, t)
@@ -22,12 +21,12 @@ function rossler!(du, u, p, t)
 end
 
 # Parameters for the Rössler system (chaotic)
-a = 0.2
+a = 0.38
 b = 0.2
-c = 5.7
+c = 4.822
 p = (a, b, c)
-u0 = [0.0, 1.0, 0.0] # Typical initial condition
-tspan = (0.0, 1e5) # Longer time span might be needed for good attractor coverage
+u0 = [1.0, 1.0, 1.0] # Typical initial condition
+tspan = (0.0, 1.5e4) # Longer time span might be needed for good attractor coverage
 
 # Calculate the trajectory of the Rössler system
 prob = ODEProblem(rossler!, u0, tspan, p)
@@ -42,75 +41,41 @@ transient_skip = Int(ceil(0.2 * total_points))
 points = all_points[(transient_skip+1):end, :]
 num_points = size(points, 1)
 
+# --- Prepare subset for plotting last 10% of *original* trajectory --- 
+# Calculate number of points for the last 10% of the full trajectory
+num_plot_points = min(10000, total_points)
+# Calculate the starting index within the 'points' array (post-transient)
+# to show the equivalent duration at the end.
+plot_start_idx_in_points = max(1, num_points - num_plot_points + 1)
+
+# Create the subset of points and assignments to plot
+plot_points_subset = points[plot_start_idx_in_points:end, :]
+
 println("Total trajectory points: $total_points")
 println("Skipping initial transient: $transient_skip points")
 println("Using $num_points points for analysis")
+println("Plotting last segment equivalent to $num_plot_points points (from index $plot_start_idx_in_points in analysis points)")
 
 # Perform clustering using the template module.
-k = 64  # Number of clusters (may need adjustment for Rössler)
-@time clusters, assignments = Template.cluster(points, k)
+k = 80  # Number of clusters (may need adjustment for Rössler)
+connectivity_threshold = 20 # May need adjustment for Rössler
+max_force_boundary = 4
+rounds = 10
 
-# Extract centroids from clustering results.
-centroids = [c[1] for c in clusters] # This is now a Vector{Vector{Float64}} of 3D points.
-cluster_indices = [c[2] for c in clusters]
+# Use best_complex to optimize the template construction.
+best = Template.best_complex(
+  points,
+  k;
+  rounds=rounds,
+  connectivity_threshold=connectivity_threshold,
+  max_force_boundary=max_force_boundary,
+  print_frequencies=true
+)
 
-# Get the connectivity matrix.
-connectivity_matrix = Template.cluster_connectivity(assignments, k)
-undirected_connectivity_matrix = (connectivity_matrix + connectivity_matrix') # Note: This is unused later
+println("Best joining locus length: $(best.joining_locus_length) (found in round $(best.round))")
 
-# Set threshold for connectivity between clusters & get edges.
-connectivity_threshold = 50 # May need adjustment for Rössler
-edges = Template.edges(connectivity_matrix, connectivity_threshold)
-
-# For debugging. If you get bidirectional connections, increase the
-# connectivity threshold.
-begin
-  # Check for bidirectional connections in the connectivity matrix.
-  bidirectional_connections = []
-  for i in 1:size(connectivity_matrix, 1)
-      for j in (i+1):size(connectivity_matrix, 2)
-          # Check using the threshold defined for edges
-          if connectivity_matrix[i,j] >= connectivity_threshold && connectivity_matrix[j,i] >= connectivity_threshold
-              # Ensure the edge (i, j) or (j, i) was actually selected by Template.edges
-              # This check is complex as Template.edges favors one direction
-              # A simpler check: are both (i,j) and (j,i) above threshold?
-               push!(bidirectional_connections, (i,j))
-          end
-      end
-  end
-
-  # Print information about bidirectional connections.
-  if !isempty(bidirectional_connections)
-      println("Found potential bidirectional connections (both directions >= threshold) between clusters:")
-      for (i,j) in bidirectional_connections
-          println("  Cluster $i ↔ Cluster $j (Check if both (i,j) and (j,i) are in 'edges')")
-      end
-  else
-      println("No potential bidirectional connections found between clusters.")
-  end
-end
-
-include("template/networkx.jl")
-using .NetworkX
-
-nx_graph = NetworkX.edges_to_networkx(edges, centroids)
-mcb = NetworkX.mcb(nx_graph)
-
-# Get the minimal cycle basis (vertex sequences).
-mcb = FastMCB.fast_mcb(k, edges, centroids)
-
-# Filter for 2-cells (faces).
-two_cells = Template.faces(mcb, edges)
-println("Found $(length(two_cells)) 2-cells (raw) out of $(length(mcb)) basis cycles.")
-
-# Get unique faces before counting for joining locus
-distinct_face_sequences = unique(two_cells) # Renamed variable
-println("Found $(length(distinct_face_sequences)) unique 2-cell sequences.") # Use new name
-
-# Calculate the joining locus using unique faces.
-joining_locus_edges = Template.joining_locus(edges, distinct_face_sequences) # Pass renamed variable
-joining_locus_set = Set(joining_locus_edges)
-println("Found $(length(joining_locus_edges)) directed edges in the joining locus.")
+# Get the assignments corresponding to the plotted subset
+plot_assignments_subset = best.assignments[plot_start_idx_in_points:end]
 
 # Plot.
 begin
@@ -127,7 +92,7 @@ begin
 
   # Slider for selecting MCB cycle (to highlight edges)
   sl_label = Label(controls_grid[1, 1], "MCB Cycle Index:")
-  sl = Slider(controls_grid[1, 2], range = 0:length(mcb), startvalue = 0)
+  sl = Slider(controls_grid[1, 2], range = 0:length(best.mcb), startvalue = 0)
   # Display slider value
   sl_val_label = Label(controls_grid[1, 3], string(sl.value[]), justification = :left)
   on(sl.value) do val
@@ -139,15 +104,91 @@ begin
   face_toggle = Toggle(controls_grid[2, 2], active = true, halign = :left) # Start visible, align left
   faces_visible = face_toggle.active
 
+  # Toggle for trajectory points visibility
+  traj_toggle_label = Label(controls_grid[3, 1], "Show Trajectory Points:")
+  traj_toggle = Toggle(controls_grid[3, 2], active = false, halign = :left) # Start INvisible, align left
+  traj_visible = traj_toggle.active
+
   # Adjust column widths: Labels auto-size, slider/toggle column expands
   colsize!(controls_grid, 1, Auto())
   colsize!(controls_grid, 2, Relative(0.5)) # Make the middle column expand
   colsize!(controls_grid, 3, Auto())
 
+#   sl = controls_grid.sliders[1]
+
+  # Define placeholder geometry for when no cycle is shown
+  placeholder_point = isempty(best.centroids) ? Point3f(0,0,0) : Point3f(best.centroids[1])
+  placeholder_points = fill(placeholder_point, 3) 
+  placeholder_triangles = [GeometryBasics.TriangleFace(1, 2, 3)]
+
+  # -- Plot dynamic MCB cycle mesh --
+  # Plot an initial, invisible placeholder mesh
+  mcb_mesh = mesh!(ax, placeholder_points, placeholder_triangles,
+      color = (:purple, 0.5), 
+      label = "Selected MCB Cycle",
+      visible = false) # Start invisible
+
+  # Update mesh plot attributes when slider changes
+  on(sl.value) do idx
+      is_valid_cycle = false
+      
+      if idx >= 1 && idx <= length(best.mcb)
+          cycle_vertices_indices = best.mcb[idx]
+          if length(cycle_vertices_indices) >= 3 # Need at least 3 vertices for a face
+              # Get centroid points for the cycle vertices.
+              cycle_vertices_geom = [Point3f(best.centroids[v]) for v in cycle_vertices_indices]
+              
+              # Simple triangulation: Fan from the first vertex.
+              num_pts = length(cycle_vertices_geom)
+              triangles = GeometryBasics.TriangleFace{Int}[] 
+              p1_idx = 1 
+              for i in 2:(num_pts - 1)
+                  p2_idx = i
+                  p3_idx = i + 1
+                  push!(triangles, GeometryBasics.TriangleFace(p1_idx, p2_idx, p3_idx))
+              end
+              
+              # Check if it fails the 2-cell criteria (your original logic)
+              is_not_2cell = Template.cycle_is_2cell(cycle_vertices_indices, best.edges)
+              color_tuple = is_not_2cell ? (:orange, 0.5) : (:purple, 0.5)
+
+              # Update plot data and attributes
+              mcb_mesh.vertices = cycle_vertices_geom
+              mcb_mesh.faces[] = triangles # Update faces observable/attribute
+              mcb_mesh.color = color_tuple
+              is_valid_cycle = true
+          end
+      end
+
+      # Update visibility
+      mcb_mesh.visible = is_valid_cycle
+  end
+
+  # Trigger initial update based on startvalue
+  notify(sl.value)
 
   # --- Plot static elements --- 
-  scatter!(ax, [c[1] for c in centroids], [c[2] for c in centroids], [c[3] for c in centroids], 
-      color = :green, markersize = 16, label = "Centroids")
+  # Plot Trajectory Points (last segment, controlled by toggle)
+  scatter!(ax, plot_points_subset[:, 1], plot_points_subset[:, 2], plot_points_subset[:, 3], 
+      color = plot_assignments_subset, # Use subset assignments
+      colormap = :turbo, 
+      colorrange = (1, k), # Explicitly set the color range
+      markersize = 2, 
+      label = "Trajectory Points (Last $num_plot_points)", # Updated label
+      visible = traj_visible) # Link visibility to toggle observable
+      
+  # Plot Trajectory Path (last segment, controlled by same toggle)
+  lines!(ax, plot_points_subset[:, 1], plot_points_subset[:, 2], plot_points_subset[:, 3], # Use subset points
+      color = (:black, 0.3), # Faint black line
+      linewidth = 1,
+      label = nothing, # Don't add path to legend
+      visible = traj_visible) # Link visibility to toggle observable
+      
+  # Plot Centroids (always visible)
+  scatter!(ax, [c[1] for c in best.centroids], [c[2] for c in best.centroids], [c[3] for c in best.centroids], 
+      color = :red, # Changed centroids to red for better contrast
+      markersize = 10, # Slightly smaller centroids
+      label = "Centroids")
 
   # Prepare and plot edge segments and directional markers.
   black_segment_points = Vector{Point3f}() # For regular edges
@@ -155,15 +196,15 @@ begin
   red_marker_points = Vector{Point3f}()
   blue_marker_points = Vector{Point3f}()
 
-  for edge_tuple in edges
+  for edge_tuple in best.edges
       u, v = edge_tuple
-      centroid_u = centroids[u]
-      centroid_v = centroids[v]
+      centroid_u = best.centroids[u]
+      centroid_v = best.centroids[v]
       point_start = Point3f(centroid_u)
       point_end = Point3f(centroid_v)
       
       # Add to appropriate segment list based on joining locus membership
-      if edge_tuple in joining_locus_set
+      if edge_tuple in Set(best.joining_locus)
           push!(green_segment_points, point_start)
           push!(green_segment_points, point_end)
       else
@@ -197,17 +238,17 @@ begin
 
   # --- Plot all 2-cell faces (meshes) --- 
   face_plots = [] # Store mesh plot objects
-  for cycle_vertices in distinct_face_sequences # Use unique faces
+  for cycle_vertices in best.faces # Use unique faces
       if length(cycle_vertices) >= 3
-          pts = [Point3f(centroids[v]) for v in cycle_vertices]
-          num_pts = length(pts) # Use local pts variable
-          triangles = TriangleFace{Int}[] # Use TriangleFace
+          pts = [Point3f(best.centroids[v]) for v in cycle_vertices]
+          num_pts = length(pts) 
+          triangles = GeometryBasics.TriangleFace{Int}[] # Explicitly use GeometryBasics.TriangleFace
           p1_idx = 1
           for i in 2:(num_pts - 1)
-              push!(triangles, TriangleFace(p1_idx, i, i + 1)) # Use TriangleFace
+              push!(triangles, GeometryBasics.TriangleFace(p1_idx, i, i + 1)) # Explicitly use GeometryBasics.TriangleFace
           end
           # Plot the mesh and store the plot object
-          p = mesh!(ax, pts, triangles, color = (:cyan, 0.6), label=nothing) # Add label=nothing
+          p = mesh!(ax, pts, triangles, color = (:cyan, 0.6), label=nothing)
           push!(face_plots, p)
       end
   end
@@ -221,42 +262,7 @@ begin
   # Set initial visibility
   notify(faces_visible)
 
-  # --- Plot dynamic highlighted MCB cycle (edges) --- 
-  mcb_lines_points_obs = Observable(Point3f[]) # Observable for line points
-  mcb_lines_color_obs = Observable(:purple) # Observable for line color
-
-  mcb_lines_plot = lines!(ax, mcb_lines_points_obs, 
-                          color = mcb_lines_color_obs, 
-                          linewidth = 5, 
-                          label = "Selected MCB Cycle")
-
-  # Update lines plot based on slider
-  on(sl.value) do idx
-      line_points = Point3f[]
-      is_valid = false
-      color = :purple
-
-      if idx >= 1 && idx <= length(mcb)
-          cycle_vertices = mcb[idx]
-          if length(cycle_vertices) >= 3
-              pts = [Point3f(centroids[v]) for v in cycle_vertices] # Calculate local pts
-              push!(pts, pts[1]) # Close the loop using local pts
-              line_points = pts    # Assign local pts to observable input
-              is_valid = true
-              # Check if it's NOT a 2-cell (using your original logic for cycle_is_2cell)
-              is_2cell = Template.cycle_is_2cell(cycle_vertices, edges)
-              color = is_2cell ? :purple : :orange
-          end
-      end
-
-      mcb_lines_points_obs[] = line_points
-      mcb_lines_color_obs[] = color
-      mcb_lines_plot.visible = is_valid
-  end
-
-  # Trigger initial update for lines plot
-  notify(sl.value)
-
+  # Add a legend (optional, but helpful)
   axislegend(ax)
   display(fig)
 end
