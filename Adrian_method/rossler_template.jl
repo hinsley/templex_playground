@@ -33,7 +33,7 @@ prob = ODEProblem(rossler!, u0, tspan, p)
 trajectory = solve(prob, Tsit5(), saveat=0.003, abstol=1e-8, reltol=1e-8) # Use a slightly larger saveat and tolerance
 
 # Extract points from the trajectory
-all_points = hcat(trajectory.u...)'
+all_points = reduce(hcat, trajectory.u)'
 total_points = size(all_points, 1)
 
 # Skip initial transient (adjust percentage if needed, e.g., 20%)

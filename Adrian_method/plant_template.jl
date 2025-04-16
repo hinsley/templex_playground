@@ -2,35 +2,29 @@ using Pkg
 Pkg.activate(".")
 Pkg.instantiate()
 
-using GLMakie, OrdinaryDiffEq, Statistics, DataStructures
+using GLMakie, OrdinaryDiffEq, Statistics, DataStructures, StaticArrays
 using LinearAlgebra, KernelDensity, NearestNeighbors, GeometryBasics
 
 include("template/template.jl")
 include("template/networkx.jl")
 using .Template
 using .NetworkX
+include("Plant_model.jl")
+using .Plant
 
-# Define the Shimizu-Morioka system
-function shimizu_morioka!(du, u, p, t)
-    alpha, lambda = p
-    x, y, z = u
-    du[1] = y
-    du[2] = x - lambda * y - x * z
-    du[3] = -alpha * z + x^2
-end
+# Define the Plant model ODE system
+odefun = Plant.melibeNew
+ΔCa = -28.0
+Δx = -1.12
+params = SVector{17, Float64}(Plant.default_params[1:15]..., Δx, ΔCa)
+u0 = SVector{6, Float64}(Plant.default_state[1], 0.0, Plant.default_state[2:5]...)
+tspan = (0.0, 3e6)
 
-# Parameters for the Shimizu-Morioka system (chaotic with lacuna)
-alpha = 0.5
-lambda = 0.85
-p = (alpha, lambda)
-u0 = [1.0, 1.0, 1.0]
-tspan = (0.0, 1.5e4)
+# Calculate the trajectory of the Plant model
+prob = ODEProblem(odefun, u0, tspan, params)
+trajectory = solve(prob, Tsit5(), saveat=0.03, abstol=1e-8, reltol=1e-8)
 
-# Calculate the trajectory of the Shimizu-Morioka system
-prob = ODEProblem(shimizu_morioka!, u0, tspan, p)
-trajectory = solve(prob, Tsit5(), saveat=0.003, abstol=1e-8, reltol=1e-8)
-
-# Extract points from the trajectory
+# Extract points from the trajectory (use all state variables).
 all_points = reduce(hcat, trajectory.u)'
 total_points = size(all_points, 1)
 
@@ -39,7 +33,7 @@ transient_skip = Int(ceil(0.2 * total_points))
 points = all_points[(transient_skip+1):end, :]
 num_points = size(points, 1)
 
-sparsification_len = 0.03
+sparsification_len = 0.8
 points = Template.sparsify(points, sparsification_len)
 num_points = size(points, 1)
 
@@ -56,10 +50,19 @@ println("Skipping initial transient: $transient_skip points")
 println("Using $num_points points for analysis")
 println("Plotting last segment equivalent to $num_plot_points points (from index $plot_start_idx_in_points in analysis points)")
 
-k = 80
-connectivity_threshold = 10
+# Simple trajectory plot (Ca, x, V)
+begin
+  fig_traj = Figure()
+  ax_traj = Axis3(fig_traj[1, 1], xlabel="Ca", ylabel="x", zlabel="V", title="Plant Model Trajectory (Ca, x, V)")
+  lines!(ax_traj, points[:, 5], points[:, 1], points[:, 6], color=:black)
+  scatter!(ax_traj, points[:, 5], points[:, 1], points[:, 6], color=:red, markersize=8)
+  display(fig_traj)
+end
+
+k = 160
+connectivity_threshold = 16
 max_force_boundary = 4
-rounds = 1
+rounds = 8
 
 best = Template.best_complex(
   points,
@@ -82,7 +85,7 @@ begin
     xlabel = "x", 
     ylabel = "y", 
     zlabel = "z",
-    title = "Shimizu-Morioka Template"
+    title = "Plant Model Template"
   )
   
   controls_grid = GridLayout(fig[2, 1], tellwidth = false)
