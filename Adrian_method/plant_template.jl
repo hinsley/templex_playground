@@ -109,7 +109,7 @@ begin
   colsize!(controls_grid, 2, Relative(0.5))
   colsize!(controls_grid, 3, Auto())
 
-  placeholder_point = isempty(best.centroids) ? Point3f(0,0,0) : Point3f(best.centroids[1])
+  placeholder_point = isempty(best.centroids) ? Point3f(0,0,0) : Point3f(best.centroids[1][[5, 1, 6]])
   placeholder_points = fill(placeholder_point, 3) 
   placeholder_triangles = [GeometryBasics.TriangleFace(1, 2, 3)]
 
@@ -128,7 +128,7 @@ begin
     if idx >= 1 && idx <= length(best.mcb)
       cycle_vertices_indices = best.mcb[idx]
       if length(cycle_vertices_indices) >= 3
-        cycle_vertices_geom = [Point3f(best.centroids[v]) for v in cycle_vertices_indices]
+        cycle_vertices_geom = [Point3f(best.centroids[v][[5, 1, 6]]) for v in cycle_vertices_indices]
         num_pts = length(cycle_vertices_geom)
         triangles = GeometryBasics.TriangleFace{Int}[] 
         p1_idx = 1 
@@ -152,35 +152,26 @@ begin
 
   scatter!(
     ax,
+    plot_points_subset[:, 5],
     plot_points_subset[:, 1],
-    plot_points_subset[:, 2],
-    plot_points_subset[:, 3], 
-    color = plot_assignments_subset, 
-    colormap = :turbo, 
-    colorrange = (1, k), 
-    markersize = 2, 
-    label = "Trajectory Points (Last $num_plot_points)", 
+    plot_points_subset[:, 6],
+    color = :red,
+    markersize = 2,
+    label = "Trajectory Points (Last $num_plot_points)",
     visible = traj_visible
   )
   lines!(
     ax,
+    plot_points_subset[:, 5],
     plot_points_subset[:, 1],
-    plot_points_subset[:, 2],
-    plot_points_subset[:, 3],
-    color = (:black, 0.3), 
+    plot_points_subset[:, 6],
+    color = (:black, 0.3),
     linewidth = 1,
-    label = nothing, 
+    label = nothing,
     visible = traj_visible
   )
-  scatter!(
-    ax,
-    [c[1] for c in best.centroids],
-    [c[2] for c in best.centroids],
-    [c[3] for c in best.centroids], 
-    color = :green,
-    markersize = 10,
-    label = "Centroids"
-  )
+
+  scatter!(ax, [Point3f(c[[5, 1, 6]]) for c in best.centroids], color = :green, markersize = 10, label = "Centroids")
 
   black_segment_points = Vector{Point3f}()
   red_segment_points = Vector{Point3f}()
@@ -189,10 +180,8 @@ begin
 
   for edge_tuple in best.edges
     u, v = edge_tuple
-    centroid_u = best.centroids[u]
-    centroid_v = best.centroids[v]
-    point_start = Point3f(centroid_u)
-    point_end = Point3f(centroid_v)
+    point_start = Point3f(best.centroids[u][[5, 1, 6]])
+    point_end = Point3f(best.centroids[v][[5, 1, 6]])
     if edge_tuple in Set(best.joining_locus)
         push!(red_segment_points, point_start)
         push!(red_segment_points, point_end)
@@ -200,6 +189,8 @@ begin
         push!(black_segment_points, point_start)
         push!(black_segment_points, point_end)
     end
+    centroid_u = best.centroids[u][[5, 1, 6]]
+    centroid_v = best.centroids[v][[5, 1, 6]]
     point_1_3 = centroid_u + (1/3) * (centroid_v - centroid_u)
     point_2_3 = centroid_u + (2/3) * (centroid_v - centroid_u)
     push!(red_marker_points, Point3f(point_1_3))
@@ -222,7 +213,7 @@ begin
   face_plots = []
   for cycle_vertices in best.faces
     if length(cycle_vertices) >= 3
-      pts = [Point3f(best.centroids[v]) for v in cycle_vertices]
+      pts = [Point3f(best.centroids[v][[5, 1, 6]]) for v in cycle_vertices]
       num_pts = length(pts)
       triangles = GeometryBasics.TriangleFace{Int}[]
       p1_idx = 1
